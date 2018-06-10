@@ -33,16 +33,22 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import org.antlr.v4.runtime.ANTLRFileStream;
 import org.antlr.v4.runtime.BailErrorStrategy;
@@ -70,6 +76,12 @@ import com.ace.antlr4.csharp.CSharpParser;
 Total lexer+parser time 1867ms.
  */
 public class Test {
+	private static final String SIGNATURE_TEXT = ".Text =";
+	private static final String SIGNATURE_SYSTEM_DRAWING_SIZE = "System.Drawing.Size";
+	private static final String SIGNATURE_SYSTEM_DRAWING_POINT = "System.Drawing.Point";
+	private static final String ASSIGNMENT_LOCATION = ".Location =";
+	private static final String ASSIGNMENT_NEW = " = new";
+	private static final String INSTRUCTION_CONTAINER_ADD_COMPONENT = ".Controls.Add(";
 	private static final String METHOD_HEADER_NITIALIZE_COMPONENT = "private void InitializeComponent()";
 	// public static long lexerTime = 0;
 	public static boolean profile = false;
@@ -115,10 +127,6 @@ public class Test {
 				return;
 			}
 		}
-	}
-
-	public static void main(String[] args) {
-		doAll(args);
 	}
 
 	public static void doAll(String[] args) {
@@ -279,6 +287,18 @@ public class Test {
 	// }
 	// }
 
+	public static void hash(String content, File toFile) throws IOException {
+
+		FileOutputStream fos = new FileOutputStream(toFile);
+		ZipOutputStream zipOut = new ZipOutputStream(fos);
+		ZipEntry zipEntry = new ZipEntry("init");
+		zipOut.putNextEntry(zipEntry);
+		zipOut.write(content.getBytes("utf-8"));
+		zipOut.close();
+		fos.flush();
+		fos.close();
+	}
+
 	public static void parseFile(String f) {
 		try {
 			if (!quiet)
@@ -313,7 +333,7 @@ public class Test {
 			if (printTree)
 				System.out.println(t.toStringTree(parser));
 
-			quickParse(f);
+			quickParse(new File(f));
 
 		} catch (Exception e) {
 			System.err.println("parser exception: " + e);
@@ -321,15 +341,82 @@ public class Test {
 		}
 	}
 
+	public static void main(String[] args) throws FileNotFoundException {
+		// doAll(args);
+
+		browse(new File(args[0]), new File(args[1]), Integer.parseInt(args[2]));
+	}
+
+	static final int CMD_PARSE_CS = 1;
+	static final int CMD_LENGTH_FILE = 2;
+
+	private static void browse(File lkpBase, File rptBase, int cmd) throws FileNotFoundException {
+		// TODO Auto-generated method stub
+		if (!rptBase.exists()) {
+			rptBase.mkdirs();
+		}
+		String fileName;
+		PrintWriter logWriter = new PrintWriter(new FileOutputStream(new File(rptBase, "dir-"+(cmd == CMD_LENGTH_FILE?"size":"parse")+".log")), true);
+		PrintWriter errWriter = new PrintWriter(new FileOutputStream(new File(rptBase, "dir-"+(cmd == CMD_LENGTH_FILE?"size":"parse")+".err")), true);
+		logWriter.append("Scanning folder>").append(lkpBase.getPath()).append("\n");
+		System.out.println("Scanning folder>" + lkpBase.getPath());
+		logWriter.flush();
+		List<String> folderNamesFound = new ArrayList<String>();
+		// process files first
+		for (File file : lkpBase.listFiles()) {
+			fileName = file.getName();
+			if (file.isDirectory()) {
+				folderNamesFound.add(fileName);
+				// browse(new File(lkpBase, fileName), new File(rptBase, fileName));
+			} else {
+				if (cmd == CMD_LENGTH_FILE) {
+					logWriter.append("File:").append(fileName).append(">").append(String.valueOf(file.length()))
+							.append(" \n");
+					logWriter.flush();
+				} else {
+					if (fileName.endsWith(".cs")) {
+						System.out.println("Parsing class>" + fileName);
+						logWriter.append("Parsing class>").append(fileName).append("\n");
+						logWriter.flush();
+						try {
+							quickParse(file, new File(rptBase, fileName), logWriter, errWriter);
+						} catch (Exception e) {
+							try {
+								PrintWriter writer = new PrintWriter(new File(rptBase, fileName + ".p.err.txt"));
+								e.printStackTrace(writer);
+								writer.flush();
+								writer.close();
+							} catch (FileNotFoundException e1) {
+								// TODO Auto-generated catch block
+								e1.printStackTrace();
+							}
+						}
+					} else {
+						logWriter.append("File ignored>").append(fileName).append("\n");
+						logWriter.flush();
+					}
+				}
+			}
+		}
+		logWriter.flush();
+		logWriter.close();
+		errWriter.flush();
+		errWriter.close();
+		// process folders found
+		for (String folderName : folderNamesFound) {
+			browse(new File(lkpBase, folderName), new File(rptBase, folderName),cmd);
+		}
+	}
+
 	static class Compilation {
 		File file;
-		String initMethodSource;
+		String initMethodSource = "";
 
 		Map<String, Component> components = new HashMap<String, Component>();
 		Map<String, Container> containers = new HashMap<String, Container>();
 
-		Compilation(String f) {
-			this.file = new File(f);
+		Compilation(File f) {
+			this.file = f;
 		}
 
 		public static interface Visitor {
@@ -343,14 +430,35 @@ public class Test {
 
 		}
 
-		public void visitTree(boolean dumpDetailed, Visitor... actions) throws IOException {
+		public void exportTree(File rptBase) throws IOException {
+
+			PrintWriter logWriter = new PrintWriter(new File(rptBase, "gui-comp-tree.txt"));
+			visitTree(true, logWriter);
+			logWriter.flush();
+			logWriter.close();
+		}
+
+		private void visitTree(boolean dumpDetailed, Visitor... actions) throws IOException {
+			visitTree(dumpDetailed, null, actions);
+
+		}
+
+		public void visitTree(boolean dumpDetailed, PrintWriter logWriter, Visitor... actions) throws IOException {
 			for (Container container : containers.values()) {
 				if (container.container == null) {
 					for (Visitor action : actions) {
 						action.enter(container, 1);
 					}
-					System.out.println(">>" + (container.name.equals("this") ? "page" : container.name.substring(5)));
-					traverse(dumpDetailed, 2, container.components.values(), actions);
+
+					if (logWriter != null) {
+						logWriter.append(">>" + (container.name.equals("this") ? "page" : container.name.substring(5)))
+								.append("\n");
+						logWriter.flush();
+					} else {
+						System.out
+								.println(">>" + (container.name.equals("this") ? "page" : container.name.substring(5)));
+					}
+					traverse(dumpDetailed, 2, container.components.values(), logWriter, actions);
 					for (Visitor action : actions) {
 						action.exit(container, 1);
 					}
@@ -358,25 +466,40 @@ public class Test {
 			}
 		}
 
-		private void traverse(boolean dumpDetailed, int depth, Collection<Component> components, Visitor... actions)
-				throws IOException {
+		private void traverse(boolean dumpDetailed, int depth, Collection<Component> components, PrintWriter logWriter,
+				Visitor... actions) throws IOException {
 			for (Component component : components) {
-				System.out.print(
-						">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".substring(0, depth * 2) + component.name.substring(5));
-				if (dumpDetailed) {
-					System.out.print("(t:" + component.type);
-					System.out.print(",x:" + component.x);
-					System.out.print(",y:" + component.y);
-					System.out.print(",w:" + component.w);
-					System.out.println(",h:" + component.h + ")");
+
+				if (logWriter != null) {
+					logWriter.append(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".substring(0, depth * 2)
+							+ component.name.substring(5));
+					logWriter.append("(t:" + component.type);
+					logWriter.append(",x:" + component.x);
+					logWriter.append(",y:" + component.y);
+					logWriter.append(",w:" + component.w);
+					logWriter.append(",h:" + component.h + ")");
+					logWriter.append("\n");
+					logWriter.flush();
 				} else {
-					System.out.println();
+					System.out.print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".substring(0, depth * 2)
+							+ component.name.substring(5));
+
+					if (dumpDetailed) {
+						System.out.print("(t:" + component.type);
+						System.out.print(",x:" + component.x);
+						System.out.print(",y:" + component.y);
+						System.out.print(",w:" + component.w);
+						System.out.println(",h:" + component.h + ")");
+					} else {
+						System.out.println();
+					}
 				}
+
 				if (component instanceof Container) {
 					for (Visitor action : actions) {
 						action.enter(((Container) component), depth);
 					}
-					traverse(dumpDetailed, depth + 1, ((Container) component).components.values(), actions);
+					traverse(dumpDetailed, depth + 1, ((Container) component).components.values(), logWriter, actions);
 					for (Visitor action : actions) {
 						action.exit(((Container) component), depth);
 					}
@@ -422,10 +545,49 @@ public class Test {
 		Map<String, Component> components = new LinkedHashMap<String, Component>();
 	}
 
-	private static void quickParse(String f) throws IOException {
+	private static void quickParse(File f, File rptBase, PrintWriter logWriter, PrintWriter errWriter)
+			throws IOException {
+		if (!rptBase.exists()) {
+			rptBase.mkdirs();
+		}
+		// PrintWriter logWriter = new PrintWriter(new File(rptBase, "dir-parse.log"));
 		Compilation compilation = new Compilation(f);
 		System.out.println("-----------first-pass----------------------");
-		firstPass(compilation);
+		firstPass(compilation, logWriter, errWriter, rptBase);
+		if (compilation.initMethodSource != null && compilation.initMethodSource.trim().length() > 0) {
+			hash(compilation.initMethodSource, new File(rptBase, "init-method.hash"));
+		}
+		//
+		System.out.println(compilation.initMethodSource);
+		System.out.println("*********first-pass************************");
+		compilation.visitTree(false);
+		System.out.println("-----------second-pass---------------------");
+		secondPass(compilation);
+		System.out.println("*********second-pass***********************");
+		compilation.visitTree(false);
+		System.out.println("*********detailed-dump***********************");
+		compilation.visitTree(true);
+		compilation.exportTree(rptBase);
+
+		KPI kpi = calculateKPIs(compilation);
+
+		PrintWriter kpiWriter = new PrintWriter(new File(rptBase, "gui-kpi.txt"));
+		kpiWriter.append("com:").append(String.valueOf(kpi.componentCount)).append(";");
+		kpiWriter.append("con:").append(String.valueOf(kpi.containerCount)).append(";");
+		kpiWriter.append("type:").append(String.valueOf(kpi.typeCount)).append(";");
+		kpiWriter.flush();
+		kpiWriter.close();
+		// System.out.println("*********export-2-html5***********************");
+		// System.out.println(exportHtml5(compilation));
+		// System.out.println("*********export-2-jquery***********************");
+		// System.out.println(exportJQuery(compilation));
+
+	}
+
+	private static void quickParse(File f) throws IOException {
+		Compilation compilation = new Compilation(f);
+		System.out.println("-----------first-pass----------------------");
+		firstPass(compilation, null, null, null);
 		System.out.println(compilation.initMethodSource);
 		System.out.println("*********first-pass************************");
 		compilation.visitTree(false);
@@ -437,10 +599,13 @@ public class Test {
 		compilation.visitTree(true);
 		System.out.println("*********export-2-html5***********************");
 		System.out.println(exportHtml5(compilation));
+		System.out.println("*********export-2-jquery***********************");
+		System.out.println(exportJQuery(compilation));
 
 	}
 
-	private static void firstPass(Compilation compilation) {
+	private static void firstPass(Compilation compilation, PrintWriter logWriter, PrintWriter errorWriter,
+			File rptBase) {
 		StringBuilder buf = new StringBuilder(8546);
 		try {
 			Map<String, Container> containers = compilation.containers;
@@ -468,11 +633,14 @@ public class Test {
 						buf.append(line).append("\n");
 					}
 					// detect components add containers
-					if (line.contains(".Controls.Add(")) {
-						i1 = line.indexOf(".Controls.Add(") + 14;
+					if (line.contains(INSTRUCTION_CONTAINER_ADD_COMPONENT)) {
+						i1 = line.indexOf(INSTRUCTION_CONTAINER_ADD_COMPONENT) + 14;
 						i2 = line.indexOf(")", i1 + 1);
 						t1 = line.substring(i1, i2);
 						t2 = line.substring(0, i1 - 14);
+						if (logWriter != null) {
+							logWriter.append("COMPONENT:" + t1 + " add to CONTAINER:" + t2).append("\n");
+						}
 						System.out.println("COMPONENT:" + t1 + " add to CONTAINER:" + t2);
 						// add new container or fetch
 						container = null;
@@ -498,7 +666,18 @@ public class Test {
 							// if so set parent container
 						} else if (components.containsKey(t1)) {
 							// check if its a component added before
-							throw new RuntimeException("component(" + t1 + ") is duplicated!!");
+							if (logWriter != null) {
+								logWriter.append("screen[" + compilation.file.getPath() + "] component(" + t1
+										+ ") is duplicated!!");
+							}
+							if (errorWriter != null) {
+								errorWriter.append("screen[" + compilation.file.getPath() + "] component(" + t1
+										+ ") is duplicated!!");
+								errorWriter.flush();
+								throw new RuntimeException("component(" + t1 + ") is duplicated!!");
+							} else {
+								throw new RuntimeException("component(" + t1 + ") is duplicated!!");
+							}
 						} else {// new component
 							component = new Component();
 							component.name = t1;
@@ -526,6 +705,21 @@ public class Test {
 		} catch (IOException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
+		} catch (RuntimeException re) {
+			if (rptBase != null) {
+				try {
+					PrintWriter writer = new PrintWriter(
+							new File(rptBase, compilation.file.getName() + "-parse-failed.txt"));
+					re.printStackTrace(writer);
+					writer.flush();
+					writer.close();
+				} catch (FileNotFoundException e1) {
+					// TODO Auto-generated catch block
+					e1.printStackTrace();
+				}
+			} else {
+				throw re;
+			}
 		}
 		compilation.initMethodSource = buf.toString();
 	}
@@ -574,7 +768,7 @@ public class Test {
 					String line, token;
 					String[] tokens;
 					// extract type
-					line = findLine(component.name + " = new");
+					line = findLine(component.name + ASSIGNMENT_NEW);
 					System.out.println(line);
 					if (line != null) {
 						token = extractTOken(line, "new ", "(");
@@ -582,9 +776,9 @@ public class Test {
 						System.out.println(token);
 					}
 					// extract location
-					line = findLine(component.name + ".Location =");
+					line = findLine(component.name + ASSIGNMENT_LOCATION);
 					System.out.println(line);
-					if (line != null && line.contains("System.Drawing.Point")) {
+					if (line != null && line.contains(SIGNATURE_SYSTEM_DRAWING_POINT)) {
 						token = extractTOken(line, "(", ")");
 						tokens = token.split(",");
 						component.x = Integer.parseInt(tokens[0].trim());
@@ -594,7 +788,7 @@ public class Test {
 					// extract dimension
 					line = findLine(component.name + ".Size =");
 					System.out.println(line);
-					if (line != null && line.contains("System.Drawing.Size")) {
+					if (line != null && line.contains(SIGNATURE_SYSTEM_DRAWING_SIZE)) {
 						token = extractTOken(line, "(", ")");
 						tokens = token.split(",");
 						component.w = Integer.parseInt(tokens[0].trim());
@@ -602,7 +796,7 @@ public class Test {
 						System.out.println(token);
 					}
 					// extract label
-					line = findLine(component.name + ".Text =");
+					line = findLine(component.name + SIGNATURE_TEXT);
 					if (line != null) {
 						token = extractTOken(line, "\"", "\";");
 						component.label = token;
@@ -696,7 +890,7 @@ public class Test {
 				if (container.name.equals("this")) {
 					html.insert(0,
 							"<!DOCTYPE HTML>\n<html><head><style>\n" + css.toString() + "\n</style></head><body>\n");
-					html.append("</body></html>");
+					html.append("</div></body></html>");
 				} else {
 					html.append(
 							"                                                ".substring(0, depth * 2) + "</div>\n");
@@ -711,6 +905,152 @@ public class Test {
 
 		});
 		return html.toString();
+
+	}
+
+	private static String exportJQuery(Compilation compilation) throws IOException {
+
+		final StringBuilder html = new StringBuilder(8544);
+		final StringBuilder css = new StringBuilder(8544);
+		compilation.visitTree(false, new Compilation.Visitor() {
+
+			@Override
+			public void enter(Container container, int depth) throws IOException {
+				if (container.name.equals("this")) {
+					// html.append("<!DOCTYPE HTML>\n<html><body>");
+					// html.append("<div id=\"parent\">");
+
+					css.append("#parent {");
+					css.append("  position: relative;");
+					css.append("  width: 800px; ");
+					css.append("  height: 600px; ");
+					css.append("  background-color: #fafafa; ");
+					css.append("  border: solid 3px #9e70ba; ");
+					css.append("  font-size: 24px;  ");
+					css.append("  text-align: center;");
+					css.append("}");
+
+				} else {
+					html.append("                                                ".substring(0, depth * 2));
+
+					html.append(
+
+							"<fieldset >\n" + "    <legend>" + container.name.substring(5) + "</legend>\n"
+									+ "    <div  id=\"" + container.name.substring(5) + "\">");
+
+					css.append("\n#" + container.name.substring(5) + " {");
+					css.append("\n  position: absolute;");
+					css.append("\n  width: " + container.w + "px; ");
+					css.append("\n  height: " + container.h + "px; ");
+					css.append("\n  left: " + container.x + "px; ");
+					css.append("\n  top: " + container.y + "px; ");
+					css.append("\n  background-color: #f0f0f0; ");
+					css.append("\n  border: solid 3px #78e382; ");
+					css.append("\n  font-size: 24px;  ");
+					css.append("\n  text-align: center;");
+					css.append("\n}");
+
+				}
+			}
+
+			@Override
+			public void enter(Component component, int depth) throws IOException {
+				html.append("                                                ".substring(0, depth * 2));
+
+				html.append("<fieldset  id=\"" + component.name.substring(5) + "\">\n" + "    <legend>"
+						+ component.name.substring(5) + "</legend>\n");
+
+				css.append("\n#" + component.name.substring(5) + " {");
+				css.append("\n  position: absolute;");
+				css.append("\n  width: " + component.w + "px; ");
+				css.append("\n  height: " + component.h + "px; ");
+				css.append("\n  left: " + component.x + "px; ");
+				css.append("\n  top: " + component.y + "px; ");
+				css.append("\n  background-color: #f0f0f0; ");
+				css.append("\n  border: solid 3px #78e382; ");
+				css.append("\n  font-size: 24px;  ");
+				css.append("\n  text-align: center;");
+				css.append("\n}");
+
+			}
+
+			@Override
+			public void exit(Container container, int depth) throws IOException {
+				if (container.name.equals("this")) {
+					html.insert(0,
+							"<!DOCTYPE HTML>\n<html><head><style>\n" + css.toString() + "\n</style></head><body>\n");
+					html.append("</body></html>");
+				} else {
+					html.append("                                                ".substring(0, depth * 2)
+							+ "</fieldset>\n");
+				}
+			}
+
+			@Override
+			public void exit(Component component, int depth) throws IOException {
+				html.append(
+						"                                                ".substring(0, depth * 2) + "</fieldset>\n");
+
+			}
+
+		});
+		return html.toString();
+
+	}
+
+	private static class KPI {
+		int containerCount = 0;
+		int componentCount = 0;
+		int typeCount = 0;
+		Set<String> types = new HashSet<String>();
+
+		void addType(String typeName) {
+			if (types.add(typeName)) {
+				typeCount++;
+			}
+		}
+
+	}
+
+	private static KPI calculateKPIs(Compilation compilation) throws IOException {
+
+		final KPI kpi = new KPI();
+
+		compilation.visitTree(false, new Compilation.Visitor() {
+
+			@Override
+			public void enter(Container container, int depth) throws IOException {
+				if (container.name.equals("this")) {
+					// page
+
+				} else {
+					// container
+					kpi.containerCount++;
+					kpi.addType(container.type);
+				}
+			}
+
+			@Override
+			public void enter(Component component, int depth) throws IOException {
+				kpi.componentCount++;
+				kpi.addType(component.type);
+
+			}
+
+			@Override
+			public void exit(Container container, int depth) throws IOException {
+				if (container.name.equals("this")) {
+				} else {
+				}
+			}
+
+			@Override
+			public void exit(Component component, int depth) throws IOException {
+
+			}
+
+		});
+		return kpi;
 
 	}
 
