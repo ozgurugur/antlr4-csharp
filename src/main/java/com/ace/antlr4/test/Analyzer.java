@@ -1,377 +1,322 @@
 package com.ace.antlr4.test;
 
-import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
+import java.io.PrintStream;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.BrokenBarrierException;
-import java.util.concurrent.CyclicBarrier;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
-import org.antlr.v4.runtime.ANTLRFileStream;
-import org.antlr.v4.runtime.BailErrorStrategy;
-import org.antlr.v4.runtime.CommonTokenStream;
-import org.antlr.v4.runtime.DiagnosticErrorListener;
-import org.antlr.v4.runtime.Lexer;
-import org.antlr.v4.runtime.ParserRuleContext;
-import org.antlr.v4.runtime.atn.LexerATNSimulator;
-import org.antlr.v4.runtime.atn.PredictionMode;
-
-import com.ace.antlr4.csharp.CSharpLexer;
-import com.ace.antlr4.csharp.CSharpParser;
-import com.ace.antlr4.test.Test.Compilation;
-import com.ace.antlr4.test.Test.Component;
-import com.ace.antlr4.test.Test.Container;
-import com.ace.antlr4.test.Test.KPI;
-import com.ace.antlr4.test.Test.Worker;
-import com.ace.antlr4.test.Test.Compilation.Visitor;
+import org.apache.commons.io.IOUtils;
 
 public class Analyzer {
-	private static final String SIGNATURE_TEXT = ".Text =";
-	private static final String SIGNATURE_SYSTEM_DRAWING_SIZE = "System.Drawing.Size";
-	private static final String SIGNATURE_SYSTEM_DRAWING_POINT = "System.Drawing.Point";
-	private static final String ASSIGNMENT_LOCATION = ".Location =";
-	private static final String ASSIGNMENT_NEW = " = new";
-	private static final String INSTRUCTION_CONTAINER_ADD_COMPONENT = ".Controls.Add(";
-	private static final String METHOD_HEADER_NITIALIZE_COMPONENT = "private void InitializeComponent()";
-	// public static long lexerTime = 0;
-	public static boolean profile = false;
-	public static boolean notree = false;
-	public static boolean gui = false;
-	public static boolean printTree = false;
-	public static boolean SLL = false;
-	public static boolean diag = false;
-	public static boolean bail = false;
-	public static boolean x2 = false;
-	public static boolean threaded = false;
-	public static boolean quiet = false;
-	// public static long parserStart;
-	// public static long parserStop;
-	public static Worker[] workers = new Worker[3];
-	static int windex = 0;
 
-	public static CyclicBarrier barrier;
-
-	public static volatile boolean firstPassDone = false;
-
-	public static class Worker implements Runnable {
-		public long parserStart;
-		public long parserStop;
-		List<String> files;
-
-		public Worker(List<String> files) {
-			this.files = files;
-		}
-
-		// @Override
-		public void run() {
-			parserStart = System.currentTimeMillis();
-			for (String f : files) {
-				parseFile(f);
+	public static class Scan {
+		public static class Folder {
+			public static enum TYPE {
+				ORDINARY, SCREEN
 			}
-			parserStop = System.currentTimeMillis();
-			try {
-				barrier.await();
-			} catch (InterruptedException ex) {
-				return;
-			} catch (BrokenBarrierException ex) {
-				return;
-			}
-		}
-	}
 
-	public static void doAll(String[] args) {
-		List<String> inputFiles = new ArrayList<String>();
-		long start = System.currentTimeMillis();
-		try {
-			if (args.length > 0) {
-				// for each directory/file specified on the command line
-				for (int i = 0; i < args.length; i++) {
-					if (args[i].equals("-notree"))
-						notree = true;
-					else if (args[i].equals("-gui"))
-						gui = true;
-					else if (args[i].equals("-ptree"))
-						printTree = true;
-					else if (args[i].equals("-SLL"))
-						SLL = true;
-					else if (args[i].equals("-bail"))
-						bail = true;
-					else if (args[i].equals("-diag"))
-						diag = true;
-					else if (args[i].equals("-2x"))
-						x2 = true;
-					else if (args[i].equals("-threaded"))
-						threaded = true;
-					else if (args[i].equals("-quiet"))
-						quiet = true;
-					if (args[i].charAt(0) != '-') { // input file name
-						inputFiles.add(args[i]);
+			public static class File {
+
+				public static class Component {
+					public static class Usage {
+						Set<String> screens = new HashSet<String>();
+						int used = 0;
+
+						public void usedInScreen(String screen, int used) {
+							screens.add(screen);
+							this.used = this.used + used;
+						}
 					}
+
+					String name;
+					Usage usage = new Usage();
 				}
-				List<String> javaFiles = new ArrayList<String>();
-				for (String fileName : inputFiles) {
-					List<String> files = getFilenames(new File(fileName));
-					javaFiles.addAll(files);
+
+				public static enum TYPE {
+					OTHER, CLASS, DESIGNER_CLASS
 				}
-				doFiles(javaFiles);
 
-				// DOTGenerator gen = new DOTGenerator(null);
-				// String dot = gen.getDOT(Java8Parser._decisionToDFA[112], false);
-				// System.out.println(dot);
-				// dot = gen.getDOT(Java8Parser._decisionToDFA[81], false);
-				// System.out.println(dot);
-
-				if (x2) {
-					System.gc();
-					System.out.println("waiting for 1st pass");
-					if (threaded)
-						while (!firstPassDone) {
-						} // spin
-					System.out.println("2nd pass");
-					doFiles(javaFiles);
+				public static enum STATUS {
+					PARSED, ERRORNOUS, IGNORED;
 				}
-			} else {
-				System.err.println("Usage: java Main <directory or file name>");
+
+				public TYPE type;
+				public STATUS status = STATUS.IGNORED;
+				public String name;
+				public int length;
+				public HashMap<String, Scan.Folder.File.Component> components = new HashMap<String, Scan.Folder.File.Component>();
+				public String error = "n/a";
+				public String path;
+
 			}
-		} catch (Exception e) {
-			System.err.println("exception: " + e);
-			e.printStackTrace(System.err); // so we can get stack trace
-		}
-		long stop = System.currentTimeMillis();
-		// System.out.println("Overall time " + (stop - start) + "ms.");
-		System.gc();
-	}
 
-	public static void doFiles(List<String> files) throws Exception {
-		long parserStart = System.currentTimeMillis();
-		// lexerTime = 0;
-		if (threaded) {
-			barrier = new CyclicBarrier(3, new Runnable() {
-				public void run() {
-					report();
-					firstPassDone = true;
-				}
-			});
-			int chunkSize = files.size() / 3; // 10/3 = 3
-			int p1 = chunkSize; // 0..3
-			int p2 = 2 * chunkSize; // 4..6, then 7..10
-			workers[0] = new Worker(files.subList(0, p1 + 1));
-			workers[1] = new Worker(files.subList(p1 + 1, p2 + 1));
-			workers[2] = new Worker(files.subList(p2 + 1, files.size()));
-			new Thread(workers[0], "worker-" + windex++).start();
-			new Thread(workers[1], "worker-" + windex++).start();
-			new Thread(workers[2], "worker-" + windex++).start();
-		} else {
-			for (String f : files) {
-				parseFile(f);
+			public TYPE type;
+			public String name;
+
+			List<Folder> folders = new ArrayList<Folder>();
+			List<File> files = new ArrayList<File>();
+		}
+
+		public List<Folder> folders = new ArrayList<Folder>();
+
+		public HashMap<String, Scan.Folder.File.Component> components = new HashMap<String, Scan.Folder.File.Component>();
+
+		public void addComponentUsage(Scan.Folder.File.Component screenComponent, String screen) {
+			Scan.Folder.File.Component component;
+			if ((component = components.get(screenComponent.name)) == null) {
+				component = new Scan.Folder.File.Component();
+				component.name = screenComponent.name;
+				components.put(screenComponent.name, component);
 			}
-			long parserStop = System.currentTimeMillis();
-			System.out.println("Total lexer+parser time " + (parserStop - parserStart) + "ms.");
-		}
-	}
-
-	private static void report() {
-		// parserStop = System.currentTimeMillis();
-		// System.out.println("Lexer total time " + lexerTime + "ms.");
-		long time = 0;
-		if (workers != null) {
-			// compute max as it's overlapped time
-			for (Worker w : workers) {
-				long wtime = w.parserStop - w.parserStart;
-				time = Math.max(time, wtime);
-				System.out.println("worker time " + wtime + "ms.");
-			}
-		}
-		System.out.println("Total lexer+parser time " + time + "ms.");
-
-		System.out.println("finished parsing OK");
-		System.out.println(LexerATNSimulator.match_calls + " lexer match calls");
-		// System.out.println(ParserATNSimulator.predict_calls +" parser predict
-		// calls");
-		// System.out.println(ParserATNSimulator.retry_with_context +"
-		// retry_with_context after SLL conflict");
-		// System.out.println(ParserATNSimulator.retry_with_context_indicates_no_conflict
-		// +" retry sees no conflict");
-		// System.out.println(ParserATNSimulator.retry_with_context_predicts_same_alt +"
-		// retry predicts same alt as resolving conflict");
-	}
-
-	public static List<String> getFilenames(File f) throws Exception {
-		List<String> files = new ArrayList<String>();
-		getFilenames_(f, files);
-		return files;
-	}
-
-	public static void getFilenames_(File f, List<String> files) throws Exception {
-		// If this is a directory, walk each file/dir in that directory
-		if (f.isDirectory()) {
-			String flist[] = f.list();
-			for (int i = 0; i < flist.length; i++) {
-				getFilenames_(new File(f, flist[i]), files);
-			}
+			component.usage.usedInScreen(screen, screenComponent.usage.used);
 		}
 
-		// otherwise, if this is a csharp file, parse it!
-		else if (((f.getName().length() > 3) && f.getName().substring(f.getName().length() - 3).equals(".cs"))) {
-			files.add(f.getAbsolutePath());
-		}
 	}
 
-	// This method decides what action to take based on the type of
-	// file we are looking at
-	// public static void doFile_(File f) throws Exception {
-	// // If this is a directory, walk each file/dir in that directory
-	// if (f.isDirectory()) {
-	// String files[] = f.list();
-	// for(int i=0; i < files.length; i++) {
-	// doFile_(new File(f, files[i]));
-	// }
-	// }
-	//
-	// // otherwise, if this is a java file, parse it!
-	// else if ( ((f.getName().length()>5) &&
-	// f.getName().substring(f.getName().length()-5).equals(".java")) )
-	// {
-	// System.err.println(f.getAbsolutePath());
-	// parseFile(f.getAbsolutePath());
-	// }
-	// }
-
-	public static void hash(String content, File toFile) throws IOException {
-
-		FileOutputStream fos = new FileOutputStream(toFile);
-		ZipOutputStream zipOut = new ZipOutputStream(fos);
-		ZipEntry zipEntry = new ZipEntry("init");
-		zipOut.putNextEntry(zipEntry);
-		zipOut.write(content.getBytes("utf-8"));
-		zipOut.close();
-		fos.flush();
-		fos.close();
-	}
-
-	public static void parseFile(String f) {
-		try {
-			if (!quiet)
-				System.err.println(f);
-			// Create a scanner that reads from the input stream passed to us
-			Lexer lexer = new CSharpLexer(new ANTLRFileStream(f));
-
-			CommonTokenStream tokens = new CommonTokenStream(lexer);
-			// long start = System.currentTimeMillis();
-			// tokens.fill(); // load all and check time
-			// long stop = System.currentTimeMillis();
-			// lexerTime += stop-start;
-
-			// Create a parser that reads from the scanner
-			CSharpParser parser = new CSharpParser(tokens);
-			if (diag)
-				parser.addErrorListener(new DiagnosticErrorListener());
-			if (bail)
-				parser.setErrorHandler(new BailErrorStrategy());
-			if (SLL)
-				parser.getInterpreter().setPredictionMode(PredictionMode.SLL);
-
-			// start parsing at the compilationUnit rule
-			ParserRuleContext t = parser.compilation_unit();
-
-			// CSharpParser.Compilation_unitContext tree = parser.compilation_unit(); //
-			// parse a compilationUnit
-
-			if (notree)
-				parser.setBuildParseTree(false);
-			// if ( gui ) t inspect(parser);
-			if (printTree)
-				System.out.println(t.toStringTree(parser));
-
-			quickParse(new File(f));
-
-		} catch (Exception e) {
-			System.err.println("parser exception: " + e);
-			e.printStackTrace(); // so we can get stack trace
-		}
-	}
-
-	public static void main(String[] args) throws FileNotFoundException {
+	public static void main(String[] args) throws NumberFormatException, IOException {
 		// doAll(args);
+		Scan scan = new Scan();
+		File rptBase = new File(args[1]);
+		rptBase.mkdirs();
+		visitFolder4Analsys(scan, new File(args[0]), rptBase);
+		PrintStream out = new PrintStream(new FileOutputStream(new File(rptBase, "	analysis.log"), false), true) {
+			@Override
+			public void println(String x) {
+				System.out.println(x);
+				super.println(x);
+			}
 
-		browse(new File(args[0]), new File(args[1]), Integer.parseInt(args[2]));
+			@Override
+			public void print(String s) {
+				System.out.print(s);
+				super.print(s);
+			}
+		};
+		out.println("-----------------------------------------------------");
+		out.println("Component;Usage;DistinctScreenCount;Complexity");
+		for (Scan.Folder.File.Component component : scan.components.values()) {
+			out.print(component.name);
+			out.print(";");
+			out.print(component.usage.used);
+			out.print(";");
+			out.print(component.usage.screens.size());
+			out.println(";");
+		}
+		out.println("-----------------------------------------------------");
+		out.println("PATH;SCREEN;FILE;TYPE;length;STATUS;ClassComponentName;ClassComponentUsage;Error;");
+		for (Scan.Folder folder : scan.folders) {
+			visitFolder4Report(File.pathSeparator, folder, out);
+		}
+
 	}
 
-	static final int CMD_PARSE_CS = 1;
-	static final int CMD_LENGTH_FILE = 2;
+	private static void visitFolder4Report(String path, Scan.Folder folder, PrintStream out) {
+		String folderName = folder.name;
+		if (folder.type == Scan.Folder.TYPE.ORDINARY) {
+			for (Scan.Folder subFolder : folder.folders) {
+				visitFolder4Report(path + folderName + File.pathSeparator, subFolder, out);
+			}
+		} else {
+			for (Scan.Folder.File file : folder.files) {
+				if (file.type == Scan.Folder.File.TYPE.DESIGNER_CLASS) {
+					if (file.status == Scan.Folder.File.STATUS.PARSED) {
+						for (Scan.Folder.File.Component component : file.components.values()) {
+							out.print(file.path);
+							out.print(";");
+							out.print(folder.name);
+							out.print(";");
+							out.print(file.name);
+							out.print(";");
+							out.print(file.type);
+							out.print(";");
+							out.print(file.length);
+							out.print(";");
+							out.print(file.status);
+							out.print(";");
+							out.print(component.name);
+							out.print(";");
+							out.print(component.usage.used);
+							out.print(";");
+							out.print(file.error);
+							out.println(";");
 
-	private static void browse(File lkpBase, File rptBase, int cmd) throws FileNotFoundException {
+						}
+					} else {
+						out.print(file.path);
+						out.print(";");
+						out.print(folder.name);
+						out.print(";");
+						out.print(file.name);
+						out.print(";");
+						out.print(file.type);
+						out.print(";");
+						out.print(file.length);
+						out.print(";");
+						out.print(file.status);
+						out.print(";");
+						out.print("n/a");
+						out.print(";");
+						out.print("");
+						out.print(";");
+						out.print(file.error);
+						out.println(";");
+					}
+				} else {
+					out.print(file.path);
+					out.print(";");
+					out.print(folder.name);
+					out.print(";");
+					out.print(file.name);
+					out.print(";");
+					out.print(file.type);
+					out.print(";");
+					out.print(file.length);
+					out.print(";");
+					out.print(file.status);
+					out.print(";");
+					out.print("n/a");
+					out.print(";");
+					out.print("");
+					out.print(";");
+					out.print(file.error);
+					out.println(";");
+				}
+			}
+		}
+	}
+
+	private static void visitFolder4Analsys(Scan scan, File lkpBase, File rptBase) throws IOException {
 		// TODO Auto-generated method stub
 		if (!rptBase.exists()) {
 			rptBase.mkdirs();
 		}
+		//
 		String fileName;
-		PrintWriter logWriter = new PrintWriter(new FileOutputStream(new File(rptBase, "dir-"+(cmd == CMD_LENGTH_FILE?"size":"parse")+".log")), true);
-		PrintWriter errWriter = new PrintWriter(new FileOutputStream(new File(rptBase, "dir-"+(cmd == CMD_LENGTH_FILE?"size":"parse")+".err")), true);
-		logWriter.append("Scanning folder>").append(lkpBase.getPath()).append("\n");
 		System.out.println("Scanning folder>" + lkpBase.getPath());
-		logWriter.flush();
-		List<String> folderNamesFound = new ArrayList<String>();
+		HashMap<String, File> folders = new HashMap<String, File>();
+		HashMap<String, File> files = new HashMap<String, File>();
 		// process files first
 		for (File file : lkpBase.listFiles()) {
 			fileName = file.getName();
 			if (file.isDirectory()) {
-				folderNamesFound.add(fileName);
+				folders.put(fileName, file);
 				// browse(new File(lkpBase, fileName), new File(rptBase, fileName));
-			} else {
-				if ((cmd & CMD_LENGTH_FILE) == CMD_LENGTH_FILE) {
-					logWriter.append("File:").append(fileName).append(">").append(String.valueOf(file.length()))
-							.append(" \n");
-					logWriter.flush();
-				} else {
-					if (fileName.endsWith(".cs")) {
-						System.out.println("Parsing class>" + fileName);
-						logWriter.append("Parsing class>").append(fileName).append("\n");
-						logWriter.flush();
-						try {
-							quickParse(file, new File(rptBase, fileName), logWriter, errWriter);
-						} catch (Exception e) {
-							try {
-								PrintWriter writer = new PrintWriter(new File(rptBase, fileName + ".p.err.txt"));
-								e.printStackTrace(writer);
-								writer.flush();
-								writer.close();
-							} catch (FileNotFoundException e1) {
-								// TODO Auto-generated catch block
-								e1.printStackTrace();
-							}
-						}
-					} else {
-						logWriter.append("File ignored>").append(fileName).append("\n");
-						logWriter.flush();
-					}
-				}
+			} else if (file.length() > 0) {
+				files.put(fileName, file);
 			}
 		}
-		logWriter.flush();
-		logWriter.close();
-		errWriter.flush();
-		errWriter.close();
-		// process folders found
-		for (String folderName : folderNamesFound) {
-			browse(new File(lkpBase, folderName), new File(rptBase, folderName),cmd);
+		// process
+		// lookup dir-parse.log
+		Scan.Folder scanFolder;
+		Scan.Folder.File scanFile;
+		Scan.Folder.File.Component component;
+		String content, screen, screenFolder, componentName;
+		List<String> lines, sizeLines, parsedLines;
+		String[] splited;
+		File file, classParseFolder, parseFile, errorFile;
+		if ((file = files.remove("dir-parse.log")) != null) {
+			content = IOUtils.toString(new FileInputStream(file));
+			if (content.contains("Parsing class")) {
+				// screen-folder
+				scanFolder = new Scan.Folder();
+				scanFolder.name = lkpBase.getName();
+				scanFolder.type = Scan.Folder.TYPE.SCREEN;
+				System.out.println("Screen folder:" + lkpBase.getPath());
+				// read size log
+				sizeLines = IOUtils.readLines(new FileInputStream(files.remove("dir-size.log")));
+				for (String sizeLine : sizeLines) {
+					// FORMAT[File:formBKRTBSYN.Designer.cs>67492]
+					if (sizeLine.startsWith("File:")) {
+						sizeLine = sizeLine.trim().split(":")[1];
+						scanFile = new Scan.Folder.File();
+						splited = sizeLine.split(">");
+						scanFile.name = splited[0];
+						scanFile.length = Integer.parseInt(splited[1]);
+						scanFile.path = file.getParentFile().getPath();
+						if (content.contains("Parsing class>" + scanFile.name)) {
+							scanFile.type = Scan.Folder.File.TYPE.DESIGNER_CLASS;
+							screenFolder = scanFile.name;
+							System.out.println("parsed-class-folder:" + screenFolder);
+							// remove from ordinary unchecked folders list
+							folders.remove(screenFolder);
+							// read parsed component info
+							classParseFolder = new File(lkpBase, screenFolder);
+							if (classParseFolder.exists()) {
+								errorFile = new File(classParseFolder, scanFile.name + "-parse-failed.txt");
+								if (errorFile.exists() && errorFile.length() > 0) {
+									// mark as errornous and discarded
+									scanFile.status = Scan.Folder.File.STATUS.ERRORNOUS;
+								} else {
+									// read component info to calc complexity
+									parseFile = new File(classParseFolder, "gui-comp-tree.txt");
+									if (parseFile.exists() && parseFile.length() > 0) {
+										scanFile.status = Scan.Folder.File.STATUS.PARSED;
+										parsedLines = IOUtils.readLines(new FileInputStream(parseFile));
+										for (String parsedLine : parsedLines) {
+											// ignore first line goon
+											if (!parsedLine.startsWith(">>page")) {
+												// ucSubeNakleden(t:Fintek.UI.UserControls.Sube,x:8,y:41,w:344,h:24)
+												if (parsedLine.contains("(")) {
+													splited = parsedLine.split("\\(");
+													// t:Fintek.UI.UserControls.Sube,x:8,y:41,w:344,h:24)
+													splited = splited[1].split(",");
+													splited = splited[0].split(":");
+													componentName = splited[1];
+													// find component usagecmd
+													if ((component = scanFile.components.get(componentName)) == null) {
+														component = new Scan.Folder.File.Component();
+														component.name = componentName;
+														scanFile.components.put(componentName, component);
+													}
+													component.usage.usedInScreen(scanFile.name, 1);
+												} else {
+													// unkowncomponent
+													scanFile.status = Scan.Folder.File.STATUS.ERRORNOUS;
+													scanFile.error = "unkown-component-type:" + parsedLine + ";";
+												}
+											}
+										}
+										// merge page component usage to global usage
+										if (scanFile.status != Scan.Folder.File.STATUS.ERRORNOUS) {
+											for (Scan.Folder.File.Component screenComponent : scanFile.components
+													.values()) {
+												scan.addComponentUsage(screenComponent, scanFile.name);
+											}
+										}
+
+									} else {
+										// unexpected state
+									}
+								}
+							} else {
+								// unexpected state
+							}
+						} else {
+							scanFile.type = Scan.Folder.File.TYPE.OTHER;
+						}
+						scanFolder.files.add(scanFile);
+					}
+				}
+
+			} else {
+				// ordinary or failed folder
+				scanFolder = new Scan.Folder();
+				scanFolder.name = lkpBase.getName();
+				scanFolder.type = Scan.Folder.TYPE.ORDINARY;
+				System.out.println("Ordinary folder:" + lkpBase.getPath());
+			}
+			scan.folders.add(scanFolder);
+		}
+		// scan renaming unchecked ordinary folders
+		for (File folder : folders.values()) {
+			visitFolder4Analsys(scan, folder, new File(rptBase, folder.getName()));
 		}
 	}
-
 
 }
